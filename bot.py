@@ -194,6 +194,11 @@ def main():
     logger.info("Bot ishga tushdi")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
-
 if __name__ == "__main__":
-    main()
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        main()
+    finally:
+        loop.close()
