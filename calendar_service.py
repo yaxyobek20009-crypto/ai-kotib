@@ -1,0 +1,6 @@
+python-telegram-bot[job-queue]==21.6
+anthropic==0.34.2
+openai==1.51.0
+google-api-python-client==2.149.0
+google-auth==2.35.0
+pytz==2024.2
