@@ -1,106 +1,121 @@
-# 🤖 AI Kotib — Sozlash Yo'riqnomasi
-
-## 1-QADAM: Anthropic API kaliti olish
-
-1. https://console.anthropic.com ga kiring
-2. "API Keys" → "Create Key" bosing
-3. Kalitni nusxalab oling (sk-ant-... bilan boshlanadi)
-
----
-
-## 2-QADAM: Google Calendar sozlash
-
-### A) Google Cloud Console
-1. https://console.cloud.google.com ga kiring
-2. Yangi loyiha yarating (masalan: "ai-kotib")
-3. "APIs & Services" → "Enable APIs" → "Google Calendar API" yoqing
-
-### B) Service Account yaratish
-1. "APIs & Services" → "Credentials" ga kiring
-2. "Create Credentials" → "Service Account" tanlang
-3. Istalgan nom bering, "Create" bosing
-4. Yaratilgan service account ni oching
-5. "Keys" tab → "Add Key" → "JSON" tanlang
-6. JSON fayl yuklab olinadi — buni saqlang!
-
-### C) Kalendarni ulash
-1. Google Calendar ni oching (calendar.google.com)
-2. Kerakli kalendarning sozlamalariga kiring (uch nuqta → "Settings")
-3. "Share with specific people" → service account emailini qo'shing
-   (JSON fayldan `client_email` maydoni, masalan: ai-kotib@project.iam.gserviceaccount.com)
-4. Ruxsat: "Make changes to events"
-5. Calendar ID ni topib oling: sozlamalar → "Integrate calendar" → Calendar ID
-
----
-
-## 3-QADAM: Telegram Bot ID olish
-
-1. Telegramda @userinfobot ga yozing
-2. `/start` yuboring
-3. U sizning user ID ingizni ko'rsatadi (raqam, masalan: 123456789)
-
----
-
-## 4-QADAM: Railway da deploy qilish
-
-### A) Railway.app
-1. https://railway.app ga kiring (GitHub bilan kiring)
-2. "New Project" → "Deploy from GitHub repo" tanlang
-3. Bu papkani GitHub ga yuklang, keyin tanlang
-
-### B) Environment Variables qo'shish
-Railway dashboard → loyiha → "Variables" bo'limi:
-
-```
-TELEGRAM_BOT_TOKEN     = 7xxxxxxxx:AAF...  (BotFather dan)
-ANTHROPIC_API_KEY      = sk-ant-api03-...  (Anthropic Console dan)
-OPENAI_API_KEY         = sk-proj-...       (platform.openai.com dan)
-GOOGLE_CALENDAR_ID     = xxx@group.calendar.google.com (yoki primary)
-ALLOWED_USER_ID        = 123456789         (sizning Telegram ID ingiz)
-GOOGLE_CREDENTIALS_JSON = {...}            (JSON faylning butun mazmuni)
-```
-
-> ⚠️ `GOOGLE_CREDENTIALS_JSON` uchun JSON faylni oching,
-> barcha mazmunini nusxalab, bir qator sifatida yapishtirib qo'ying.
-
-### C) Start Command
-Railway → Settings → "Start Command":
-```
-python bot.py
-```
-
----
-
-## 5-QADAM: Botni tekshirish
-
-Telegram da botingizga yozing:
-- `/start` — ishga tushishi kerak
-- `Ertaga soat 10 da Alisher bilan uchrashuv bor` — qo'shilishi kerak
-- `/vazifalar` — bugungi vazifalar chiqishi kerak
-
----
-
-## Xatoliklar haqida
-
-**Bot javob bermasa:**
-- Railway logs ni tekshiring
-- TELEGRAM_BOT_TOKEN to'g'riligini tekshiring
-
-**"GOOGLE_CREDENTIALS_JSON topilmadi":**
-- JSON ni to'g'ri yapishtirgansizmi?
-
-**"ANTHROPIC_API_KEY topilmadi":**
-- Anthropic Console dan yangi kalit oling
-
----
-
-## Narxlar (taxminiy)
-
-| Xizmat | Narx |
-|--------|------|
-| Railway | $5/oy (Hobby plan) |
-| Anthropic API | ~$0.001 per so'rov |
-| OpenAI Whisper | ~$0.006/min ovoz |
-| Google Calendar API | Bepul |
-
-Kuniga 50 ta so'rov yuborilsa — taxminan $5-8/oy.
+"""
+AI Brain - Claude yordamida vazifani tushunish
+"""
+ 
+import os
+import json
+import logging
+from datetime import datetime, timedelta
+import pytz
+import anthropic
+ 
+logger = logging.getLogger(__name__)
+ 
+TASHKENT_TZ = pytz.timezone("Asia/Tashkent")
+ 
+SYSTEM_PROMPT = """Sen O'zbekiston (Toshkent vaqti, UTC+5) da ishlaydigon shaxsiy kotibsan.
+Foydalanuvchi o'zbek tilida vazifa yoki uchrashuv haqida aytadi.
+Sening vazifang — bu ma'lumotni tahlil qilib, JSON formatida qaytarish.
+ 
+BUGUNGI SANA VA VAQT: {current_datetime}
+ 
+QOIDALAR:
+1. Agar foydalanuvchi vazifa yoki uchrashuv qo'shmoqchi bo'lsa — action = "add_task"
+2. Agar savol bersa yoki boshqa narsa desa — action = "info" va message maydonida javob ber
+ 
+KATEGORIYALAR:
+- "ish" — ish, loyiha, hisobot, email, xodimlar, biznes
+- "shaxsiy" — shaxsiy ishlar, oila, soglik, do'stlar
+- "uchrashuv" — meeting, uchrashuv, ko'rishish, suhbat
+ 
+MUHIMLIK:
+- urgent: true — "muhim", "shoshilinch", "bugun albatta", "urgent" kabi so'zlar bo'lsa
+- urgent: false — oddiy holat
+ 
+VAQT ANIQLASH:
+- "ertaga" = ertangi kun
+- "juma kuni" = kelayotgan juma
+- "bu hafta" = joriy haftaning oxiri (juma)
+- "keyinroq", "vaqt bo'lganda" = 1 hafta keyin
+- Agar vaqt aytilmasa — bugungi sanani ishlat, vaqt: null
+ 
+JAVOB FORMATI (faqat JSON, hech qanday izoh yo'q):
+ 
+add_task uchun:
+{
+  "action": "add_task",
+  "event": {
+    "title": "qisqa va aniq sarlavha",
+    "date_iso": "2025-01-15",
+    "time_iso": "10:00" yoki null,
+    "date_str": "15 yanvar, chorshanba",
+    "time_str": "soat 10:00" yoki "",
+    "category": "ish" | "shaxsiy" | "uchrashuv",
+    "urgent": true | false,
+    "urgency_label": "🔴 Shoshilinch" | "🟢 Oddiy",
+    "note": "qo'shimcha ma'lumot yoki null"
+  }
+}
+ 
+info uchun:
+{
+  "action": "info",
+  "message": "foydalanuvchiga javob matni"
+}
+"""
+ 
+ 
+class AIBrain:
+    def __init__(self):
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY topilmadi!")
+        self.client = anthropic.Anthropic(api_key=api_key)
+ 
+    async def analyze(self, user_text: str) -> dict:
+        """Foydalanuvchi matnini tahlil qilish"""
+        now = datetime.now(TASHKENT_TZ)
+        current_datetime = now.strftime("%Y-%m-%d %A, soat %H:%M (Toshkent vaqti)")
+ 
+        # O'zbek kunlarini almashtirish (agar kerak bo'lsa)
+        day_map = {
+            "Monday": "Dushanba", "Tuesday": "Seshanba", "Wednesday": "Chorshanba",
+            "Thursday": "Payshanba", "Friday": "Juma", "Saturday": "Shanba", "Sunday": "Yakshanba"
+        }
+        for eng, uzb in day_map.items():
+            current_datetime = current_datetime.replace(eng, uzb)
+ 
+        system = SYSTEM_PROMPT.format(current_datetime=current_datetime)
+ 
+        try:
+            response = self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                system=system,
+                messages=[{"role": "user", "content": user_text}]
+            )
+ 
+            raw = response.content[0].text.strip()
+            logger.info(f"Claude javobi: {raw[:200]}")
+ 
+            # JSON tozalash
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
+ 
+            result = json.loads(raw)
+            return result
+ 
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON xatosi: {e}, raw: {raw}")
+            return {
+                "action": "info",
+                "message": "Kechirasiz, tushunishda xatolik yuz berdi. Boshqacha aytib ko'ring."
+            }
+        except Exception as e:
+            logger.error(f"Claude xatosi: {e}")
+            return {
+                "action": "info",
+                "message": "Xatolik yuz berdi. Bir oz kutib qaytadan urinib ko'ring."
